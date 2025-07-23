@@ -1,0 +1,321 @@
+# ===============================================
+# 📍 Step 1: Load Data and Define CMRs (Co-Methylated Regions)
+# ===============================================
+install.packages("path/to/your/comeback_1.0.1.tar.gz", repos = NULL, type = "source")
+
+# EDIT THESE PARAMETERS BEFORE RUNNING
+input_beta_path <- "path/to/your/beta_matrix.csv"  # e.g., "data/your_beta.csv"
+source("path/to/MRS_func.R")                       # e.g., "scripts/MRS_func.R"
+input_summary_stats <- "path/to/your_EWAS_summary_stats.xlsx"   # e.g., "data/ewas_example.xlsx" (with 4 columns: Marker, BETA, SE and Pvalue)
+input_summary_stats_methylscore <- "path/to/your_EWAS_summary_stats_methylscore.xlsx"   # e.g., "data/ewas_example.xlsx" (with 3 columns: cpg, beta, p)
+# -----------------------------------------------
+# Load and prepare beta matrix
+# -----------------------------------------------
+library(data.table)
+
+beta_raw <- fread(input_beta_path)
+beta_matrix <- t(beta_raw)
+beta_matrix <- beta_matrix[-1, ]
+colnames(beta_matrix) <- beta_raw[[1]]
+beta_matrix <- apply(beta_matrix, 2, as.numeric)
+
+# -----------------------------------------------
+# Define co-methylated regions (CMRs)
+# -----------------------------------------------
+# CMRs with default settings (corlo = 0.3)
+cmrs_default <- cmr(Mdata = beta_matrix, Iarray = "EPIC", corlo = 0.3)
+
+# CMRs with stricter correlation and distance threshold
+cmrs_strict <- cmr(
+  Mdata = beta_matrix,
+  Iarray = "EPIC",
+  cormethod = "spearman",
+  corlo = 0.5,
+  maxprbdst = 2000
+)
+
+# -----------------------------------------------
+# Generate composite and average betas per CMR
+# -----------------------------------------------
+# Composite betas
+CMR_compB_default <- cmr_comp(cmrs = cmrs_default, Mdata = beta_matrix)
+CMR_compB_strict  <- cmr_comp(cmrs = cmrs_strict,  Mdata = beta_matrix)
+
+# Average betas
+CMR_aveB_default <- cmr_comp(cmrs = cmrs_default, Mdata = beta_matrix, cmethod = "mean")
+CMR_aveB_strict  <- cmr_comp(cmrs = cmrs_strict,  Mdata = beta_matrix, cmethod = "mean")
+
+# -----------------------------------------------
+# Generate CoMeRegion objects for scoring
+# -----------------------------------------------
+CoMeRegion_default <- GenCoMeRegion(cmrs = cmrs_default, beta = res, Overlap = FALSE)
+CoMeRegion_strict  <- GenCoMeRegion(cmrs = cmrs_strict,  beta = res, Overlap = FALSE)
+
+# -----------------------------------------------
+# Save outputs
+# -----------------------------------------------
+save(cmrs_default, file = "CMRs_default.RData")
+save(cmrs_strict,  file = "CMRs_strict.RData")
+
+save(CMR_compB_default, file = "CMR_compB_default.rda")
+save(CMR_compB_strict,  file = "CMR_compB_strict.rda")
+
+save(CMR_aveB_default, file = "CMR_aveB_default.rda")
+save(CMR_aveB_strict,  file = "CMR_aveB_strict.rda")
+
+save(CoMeRegion_default, file = "CoMeRegion_default.rda")
+save(CoMeRegion_strict,  file = "CoMeRegion_strict.rda")
+
+# ===============================================
+# 📍 Step 2: Generate MRS (Methylation Risk Scores)
+# ===============================================
+
+# -----------------------------------------------
+# Load and format EWAS summary statistics
+# -----------------------------------------------
+SS_raw <- read_excel(input_summary_stats)
+summary_stats <- SS_raw[, c(1, 2, 3, 4)]  # Adjust if needed
+colnames(summary_stats) <- c("Marker", "BETA", "SE", "Pvalue")
+
+# -----------------------------------------------
+# Define p-value thresholds
+# -----------------------------------------------
+# Automatically detects minimum exponent (e.g., for 4.3e-09 → minpvalue = 9)
+min_pvalue_exp <- sapply(strsplit(as.character(min(summary_stats$Pvalue)), "-"), "[", 2)
+Pthred <- 2:as.numeric(min_pvalue_exp)
+
+# -----------------------------------------------
+# Generate MRS with co-methylation pruning
+# -----------------------------------------------
+# NOTE: Replace `CoMeRegion_example` with actual object or load it above
+# For example: load("CoMeRegion_default.rda")
+
+# Example run with co-methylation region pruning
+MRS_obj <- GenMRS(
+  beta = beta_matrix,
+  SS = summary_stats,
+  Pthred = Pthred,
+  CoMeRegion = CoMeRegion_example,  # Replace with actual loaded object
+  CoMeBack = TRUE,
+  weightSE = FALSE
+)
+
+# -----------------------------------------------
+# Save output MRS
+# -----------------------------------------------
+write.csv(MRS$pvalueinfo, "MRS_pvalueinfo.csv", row.names = FALSE)
+write.csv(MRS$MRS, "MRS_scores.csv",     row.names = FALSE)
+
+# ===============================================
+# 📍 Step 3: Evaluate Predictive Performance of MRS
+# ===============================================
+
+# -----------------------------------------------
+# Set seed for reproducibility
+# -----------------------------------------------
+set.seed(123)
+
+# -----------------------------------------------
+# Simulate binary phenotype (0/1) for each individual in MRS
+# -----------------------------------------------
+example_pheno <- data.frame(
+  ID = example_MRS$MRS$ID,
+  pheno = sample(c(0, 1), nrow(example_MRS$MRS), replace = TRUE)
+)
+
+# -----------------------------------------------
+# Save phenotype file (optional)
+# -----------------------------------------------
+write.csv(example_pheno, "example_pheno.csv", row.names = FALSE)
+
+# -----------------------------------------------
+# Merge phenotype with MRS by ID
+# -----------------------------------------------
+MRS_pheno_merged <- merge(example_MRS$MRS, example_pheno, by = "ID")
+
+# -----------------------------------------------
+# Initialize matrix to store R² for each P-value threshold
+# -----------------------------------------------
+R2_matrix <- matrix(NA, ncol(example_MRS$MRS) - 1, 1)
+rownames(R2_matrix) <- colnames(example_MRS$MRS)[-1]  # Exclude "ID" column
+
+# -----------------------------------------------
+# Calculate R² for each MRS
+# -----------------------------------------------
+for (j in 2:ncol(example_MRS$MRS)) {
+  R2_matrix[(j - 1), 1] <- cor(MRS_pheno_merged[, j], MRS_pheno_merged$pheno, use = "complete.obs")^2
+}
+
+# -----------------------------------------------
+# Convert to data.frame and add transformed P-values
+# -----------------------------------------------
+R2_results <- data.frame(R2 = R2_matrix)
+R2_results$Pvalue <- -log10(as.numeric(sapply(strsplit(rownames(R2_results), "P"), "[", 2)) / 5)
+
+# -----------------------------------------------
+# Identify best-performing threshold
+# -----------------------------------------------
+max_R2 <- max(R2_results$R2, na.rm = TRUE)
+optimal_index <- which(R2_results$R2 == max_R2)
+optimal_Pthresh <- rownames(R2_results)[optimal_index]
+
+# -----------------------------------------------
+# Plot Prediction Accuracy by P-value Threshold
+# -----------------------------------------------
+library(ggplot2)
+plot_R2 <- ggplot(R2_results, aes(x = Pvalue, y = R2)) +
+  geom_line(linewidth = 1.3) +
+  geom_point() +
+  scale_y_continuous(name = "Prediction Accuracy (R²)") +
+  scale_x_continuous(name = "-log10(P-value / 5)") +
+  ggtitle("Prediction Accuracy by P-value Threshold") +
+  theme(
+    plot.title = element_text(family = "Times", face = "bold", size = 22, hjust = 0.5),
+    axis.title = element_text(family = "Times", face = "bold", size = 18),
+    text = element_text(size = 20),
+    axis.line = element_line(colour = "black"),
+    panel.background = element_blank(),
+    axis.ticks = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+
+# -----------------------------------------------
+# Save the plot
+# -----------------------------------------------
+ggsave("Prediction_R2_by_Pthresh.png", plot = plot_R2, height = 6, width = 6)
+
+# -----------------------------------------------
+# Print results
+# -----------------------------------------------
+print(R2_results)
+print(paste("Maximum R²:", round(max_R2, 4)))
+print(paste("Optimal P-value threshold:", optimal_Pthresh))
+
+# ===============================================
+# 📍 Step 4: Compare ComeBack to Methylscore
+# ===============================================
+
+MRS_Methylscore <- calculate_episcore(
+  thrs.criteria = 0.05,
+  beta.file = input_beta_path,
+  ewas.file = input_summary_stats_methylscore,
+  missingness = 0.2
+)
+
+MRS_ComeBack <- read.csv("MRS_scores.csv")
+comparison_MRS <- merge(MRS_ComeBack, MRS_Methylscore, by = "ID")
+
+# -----------------------------------------------
+# Normalize selected columns for correlation
+# -----------------------------------------------
+comparison_MRS_norm <- comparison_MRS %>%
+  mutate(across(c(P0.05.x, P0.05.y, var_example1), ~ as.numeric(scale(.)))) # 'var_example1' is a column in MRS_Methylscore
+
+# -----------------------------------------------
+# Calculate Spearman correlation
+# -----------------------------------------------
+cor <- cor.test(comparison_MRS_norm$P0.05.x, comparison_MRS_norm$var_example1, method = "spearman")
+
+# -----------------------------------------------
+# Scatter plot with regression line and correlation coefficient
+# -----------------------------------------------
+plot <- ggscatter(comparison_MRS_norm, x = "P0.05.x", y = "var_example1",
+                    add = "reg.line", conf.int = TRUE, cor.coef = TRUE, cor.method = "spearman",
+                    xlab = "P0.05.x (ComeBack)", ylab = "var_example1")
+
+# ===============================================
+# 📍 Step 5: Continuous p-value thresholds (optional)
+# ===============================================
+
+# This step loops over a sequence of p-value thresholds to:
+# - Filter EWAS summary stats at each threshold
+# - Compute the number of selected CpGs
+# - Generate MRS scores using GenMRS()
+# - Optionally calculate R² (predictive performance)
+
+# -----------------------------------------------
+# Define a sequence of p-value thresholds
+# -----------------------------------------------
+pvalue_thresholds <- seq(0.001, 0.05, by = 0.001)
+
+# -----------------------------------------------
+# Initialize results data frame
+# -----------------------------------------------
+results <- data.frame(
+  PvalueThreshold = pvalue_thresholds,
+  Num_CpGs = NA_integer_,
+  R_squared = NA_real_
+)
+
+# ===============================================
+# 🔄 Loop over each p-value threshold
+# ===============================================
+for (i in seq_along(pvalue_thresholds)) {
+  thresh <- pvalue_thresholds[i]
+
+  # -----------------------------------------------
+  # Subset EWAS summary stats at current threshold
+  # -----------------------------------------------
+  selected_cpgs <- summary_stats %>%
+    filter(Pvalue < thresh)
+
+  # Store number of CpGs
+  results$Num_CpGs[i] <- nrow(selected_cpgs)
+
+  # Skip if no CpGs are selected
+  if (nrow(selected_cpgs) == 0) next
+
+  # -----------------------------------------------
+  # Generate MRS using GenMRS() for current threshold
+  # -----------------------------------------------
+  MRS_tmp <- GenMRS(
+    beta = beta_matrix,
+    SS = selected_cpgs,
+    Pthred = thresh,
+    CoMeRegion = CoMeRegion_example,  # Replace with your loaded CoMeRegion object
+    CoMeBack = TRUE,
+    weightSE = FALSE
+  )
+
+  # -----------------------------------------------
+  # Merge with phenotype and compute R²
+  # -----------------------------------------------
+  MRS_pheno_tmp <- merge(MRS_tmp$MRS, example_pheno, by = "ID")
+
+  r2_tmp <- cor(
+    MRS_pheno_tmp[, 2],
+    MRS_pheno_tmp$pheno,
+    use = "complete.obs"
+  )^2
+
+  results$R_squared[i] <- r2_tmp
+}
+
+# ===============================================
+# 📊 Plot number of CpGs vs p-value threshold
+# ===============================================
+library(ggplot2)
+
+ggplot(results, aes(x = PvalueThreshold, y = Num_CpGs)) +
+  geom_line(color = "blue") +
+  geom_point() +
+  labs(
+    title = "Number of CpGs Selected by P-value Threshold",
+    x = "P-value Threshold",
+    y = "Number of CpGs"
+  ) +
+  theme_minimal()
+
+# ===============================================
+# 📊 Plot R² (prediction accuracy) vs threshold
+# ===============================================
+ggplot(results, aes(x = PvalueThreshold, y = R_squared)) +
+  geom_line(color = "darkgreen") +
+  geom_point() +
+  labs(
+    title = "Prediction Accuracy (R²) by P-value Threshold",
+    x = "P-value Threshold",
+    y = "R-squared"
+  ) +
+  theme_minimal()
