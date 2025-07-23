@@ -249,7 +249,7 @@ results <- data.frame(
 )
 
 # ===============================================
-# 🔄 Loop over each p-value threshold
+# Loop over each p-value threshold
 # ===============================================
 for (i in seq_along(pvalue_thresholds)) {
   thresh <- pvalue_thresholds[i]
@@ -293,7 +293,7 @@ for (i in seq_along(pvalue_thresholds)) {
 }
 
 # ===============================================
-# 📊 Plot number of CpGs vs p-value threshold
+# Plot number of CpGs vs p-value threshold
 # ===============================================
 library(ggplot2)
 
@@ -308,7 +308,7 @@ ggplot(results, aes(x = PvalueThreshold, y = Num_CpGs)) +
   theme_minimal()
 
 # ===============================================
-# 📊 Plot R² (prediction accuracy) vs threshold
+# Plot R² (prediction accuracy) vs threshold
 # ===============================================
 ggplot(results, aes(x = PvalueThreshold, y = R_squared)) +
   geom_line(color = "darkgreen") +
